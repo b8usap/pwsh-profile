@@ -1,0 +1,11 @@
+# Per-machine state — must not be in git
+.last-pull
+.last-ps-update-check
+.setup-complete
+
+# Rebuildable per-machine via Update-OuiDatabase
+tools/oui.json
+
+# Local backups
+*.bak
+*.bak.*
