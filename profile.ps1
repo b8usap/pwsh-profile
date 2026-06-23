@@ -102,6 +102,13 @@ function Invoke-ProfileSetup {
 
     Install-WingetPackage -Id 'ajeetdsouza.zoxide' -Name 'zoxide'
 
+    Write-Step "Disabling PowerShell's built-in update notification"
+    # PowerShell 7 shows a "new release available" banner on shell start
+    # independently of the profile's Check-PSUpdate. Disable it so we have
+    # one (throttled) notifier instead of two.
+    [Environment]::SetEnvironmentVariable('POWERSHELL_UPDATECHECK', 'Off', 'User')
+    Write-OK "POWERSHELL_UPDATECHECK = Off (user env var)"
+
     Write-Step "Installing Chocolatey"
     if (Test-CommandExists 'choco') {
         Write-Skip "Chocolatey"
