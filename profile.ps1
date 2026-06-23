@@ -216,9 +216,20 @@ function tail {
 
 # ── Navigation Shortcuts ──────────────────────────────────────────────────────
 
-function docs { Set-Location -Path $HOME\Documents }
-function down { Set-Location -Path $HOME\Downloads }
-function dtop { Set-Location -Path $HOME\Desktop }
+# Resolve special folders via the shell API rather than $HOME\<name>, so
+# OneDrive Known Folder Move (which relocates Desktop/Documents/Pictures
+# under OneDrive\) works transparently.
+function docs { Set-Location ([Environment]::GetFolderPath('MyDocuments')) }
+function dtop { Set-Location ([Environment]::GetFolderPath('Desktop')) }
+function down {
+    # Downloads isn't in the .NET SpecialFolder enum; pull from the
+    # Shell Folders registry key (already-expanded paths).
+    $key  = 'HKCU:\Software\Microsoft\Windows\CurrentVersion\Explorer\Shell Folders'
+    $guid = '{374DE290-123F-4565-9164-39C4925E467B}'
+    $path = (Get-ItemProperty $key -Name $guid -ErrorAction SilentlyContinue).$guid
+    if (-not $path -or -not (Test-Path $path)) { $path = "$HOME\Downloads" }
+    Set-Location $path
+}
 
 # ── Network Utilities ─────────────────────────────────────────────────────────
 
