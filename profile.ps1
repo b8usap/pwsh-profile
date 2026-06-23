@@ -222,7 +222,27 @@ function dtop { Set-Location -Path $HOME\Desktop }
 
 # ── Network Utilities ─────────────────────────────────────────────────────────
 
-function Get-PubIP { (Invoke-WebRequest http://ifconfig.me/ip).Content }
+function Get-PubIP {
+    <#
+    .SYNOPSIS
+        Show your public IPv4 and IPv6 addresses.
+    #>
+    [CmdletBinding()]
+    param()
+
+    $result = [ordered]@{ IPv4 = $null; IPv6 = $null }
+
+    foreach ($v in 'IPv4', 'IPv6') {
+        $host_ = if ($v -eq 'IPv4') { 'ipv4.icanhazip.com' } else { 'ipv6.icanhazip.com' }
+        try {
+            $result[$v] = (Invoke-WebRequest "https://$host_" -TimeoutSec 5).Content.Trim()
+        } catch {
+            $result[$v] = '(unavailable)'
+        }
+    }
+
+    [pscustomobject]$result
+}
 function flushdns  { Clear-DnsClientCache }
 
 # ── System Utilities ──────────────────────────────────────────────────────────
@@ -493,7 +513,7 @@ function Show-ProfileTools {
             [pscustomobject]@{ N='dtop';            D='cd to ~\Desktop' }
         )
         'Network' = @(
-            [pscustomobject]@{ N='Get-PubIP';       D='Show your public IP address' }
+            [pscustomobject]@{ N='Get-PubIP';       D='Show your public IPv4 + IPv6 addresses' }
             [pscustomobject]@{ N='flushdns';        D='Clear the DNS client cache' }
         )
         'System' = @(
