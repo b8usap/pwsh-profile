@@ -271,7 +271,12 @@ function uptime {
 
 function sysinfo        { Get-ComputerInfo }
 function df             { Get-Volume }
-function reload-profile { & $PROFILE }
+function reload-profile {
+    # Dot-source, not call (&). Calling runs the profile in a child scope
+    # where new function/alias/var definitions disappear when it returns,
+    # leaving the parent session with the OLD versions — making this a no-op.
+    . $PROFILE
+}
 
 # ── Text Processing ───────────────────────────────────────────────────────────
 
