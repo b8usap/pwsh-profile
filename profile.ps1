@@ -425,21 +425,38 @@ function Update-PowerShell {
     .SYNOPSIS
         Upgrades PowerShell to the latest stable release via winget.
         Self-elevates if not already running as administrator.
+    .NOTES
+        Uses 'winget install --id ... --source winget' rather than
+        'winget upgrade --id ...'. On MSI installs winget's installed-package
+        index can fail to match by Id ("No installed package found matching
+        input criteria") even though a bare 'winget upgrade' lists it.
+        'install' resolves the Id against the winget catalog, detects the
+        existing install and upgrades it in place.
+
+        Runs the upgrade from Windows PowerShell 5.1 (powershell.exe) so
+        pwsh.exe isn't holding its own files open while the MSI replaces them.
+        Close other pwsh windows first.
     #>
-    if (-not $isAdmin) {
-        Write-Host "Elevation required. Launching admin PowerShell..." -ForegroundColor Yellow
-        Start-Process pwsh -Verb RunAs -ArgumentList '-NoProfile','-Command', @'
-winget upgrade --id Microsoft.PowerShell --silent --accept-source-agreements --accept-package-agreements
+    $upgradeScript = @'
+winget install --id Microsoft.PowerShell --exact --source winget --silent --accept-source-agreements --accept-package-agreements
+$code = $LASTEXITCODE
 Write-Host ""
-Write-Host "Upgrade complete. Close this window and reopen PowerShell." -ForegroundColor Green
+# 0 = upgraded; -1978335189 (0x8A15002B) = already at the latest version
+if ($code -eq 0) {
+    Write-Host "Upgrade complete. Close ALL PowerShell 7 windows and reopen." -ForegroundColor Green
+} elseif ($code -eq -1978335189) {
+    Write-Host "PowerShell is already at the latest version." -ForegroundColor Green
+} else {
+    Write-Host ("winget failed with exit code {0} (0x{1:X8}). PowerShell was NOT upgraded." -f $code, $code) -ForegroundColor Red
+}
 Write-Host "Press any key to exit..."
 $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
 '@
-        return
-    }
 
-    winget upgrade --id Microsoft.PowerShell --silent --accept-source-agreements --accept-package-agreements
-    Write-Host "Restart PowerShell to use the new version." -ForegroundColor Green
+    Write-Host "Launching elevated Windows PowerShell to run the upgrade..." -ForegroundColor Yellow
+    Write-Host "Close any other PowerShell 7 windows before it starts." -ForegroundColor DarkGray
+    $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($upgradeScript))
+    Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded
 }
 
 # ── Oh My Posh ────────────────────────────────────────────────────────────────
