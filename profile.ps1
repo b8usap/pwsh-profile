@@ -423,43 +423,98 @@ function Check-PSUpdate {
 function Update-PowerShell {
     <#
     .SYNOPSIS
-        Upgrades PowerShell to the latest stable release via winget.
-        Self-elevates if not already running as administrator.
+        Upgrades PowerShell to the latest stable release from the official
+        GitHub MSI (SHA256 + Authenticode verified). Self-elevates.
     .NOTES
-        Uses 'winget install --id ... --source winget' rather than
-        'winget upgrade --id ...'. On MSI installs winget's installed-package
-        index can fail to match by Id ("No installed package found matching
-        input criteria") even though a bare 'winget upgrade' lists it.
-        'install' resolves the Id against the winget catalog instead.
+        Deliberately does NOT use winget. On this setup winget proved
+        unreliable for PowerShell itself:
+          - 'winget upgrade --id Microsoft.PowerShell' can't match an MSI
+            install ("No installed package found matching input criteria").
+          - 'winget install' then treats it as a fresh install and, because
+            the manifest's default installer is the msixbundle, drops a
+            sandboxed Store/MSIX copy side-by-side with the MSI.
+          - winget's installed.db keeps tracking that MSIX copy even after
+            it's removed, so later installs report "No available upgrade".
+        Pulling the MSI straight from the GitHub release avoids all of it,
+        and the MSI's major-upgrade logic replaces the Program Files install.
 
-        --installer-type wix is REQUIRED: the manifest's default installer
-        is the MSIX bundle, and because winget can't correlate the existing
-        MSI it treats 'install' as a fresh install and drops a Store/MSIX
-        copy side-by-side with the MSI. Pinning wix makes the MSI's own
-        major-upgrade logic replace the existing Program Files install.
-
-        Runs the upgrade from Windows PowerShell 5.1 (powershell.exe) so
-        pwsh.exe isn't holding its own files open while the MSI replaces them.
-        Close other pwsh windows first.
+        Runs from elevated Windows PowerShell 5.1 (powershell.exe) so pwsh.exe
+        isn't holding its own files open. Close other pwsh windows first.
+    .PARAMETER Force
+        Reinstall even if already on the latest version.
     #>
+    [CmdletBinding()]
+    param([switch]$Force)
+
     $upgradeScript = @'
-winget install --id Microsoft.PowerShell --exact --source winget --installer-type wix --silent --accept-source-agreements --accept-package-agreements
-$code = $LASTEXITCODE
-Write-Host ""
-# 0 = upgraded; -1978335189 (0x8A15002B) = already at the latest version
-if ($code -eq 0) {
-    Write-Host "Upgrade complete. Close ALL PowerShell 7 windows and reopen." -ForegroundColor Green
-} elseif ($code -eq -1978335189) {
-    Write-Host "PowerShell is already at the latest version." -ForegroundColor Green
-} else {
-    Write-Host ("winget failed with exit code {0} (0x{1:X8}). PowerShell was NOT upgraded." -f $code, $code) -ForegroundColor Red
+$ErrorActionPreference = 'Stop'
+$ProgressPreference    = 'SilentlyContinue'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$current = [version]'__CURRENT__'
+$force   = [bool]::Parse('__FORCE__')
+
+function Pause-Exit([int]$code) {
+    Write-Host ""
+    Write-Host "Press any key to exit..."
+    $null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+    exit $code
 }
-Write-Host "Press any key to exit..."
-$null = $Host.UI.RawUI.ReadKey('NoEcho,IncludeKeyDown')
+
+try {
+    $rel    = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest' -TimeoutSec 15
+    $latest = [version]($rel.tag_name.TrimStart('v'))
+    Write-Host "Installed: $current   Latest: $latest"
+
+    if ($latest -le $current -and -not $force) {
+        Write-Host "PowerShell is already at the latest version." -ForegroundColor Green
+        Pause-Exit 0
+    }
+
+    $arch  = if ($env:PROCESSOR_ARCHITECTURE -eq 'ARM64') { 'arm64' } else { 'x64' }
+    $name  = "PowerShell-$latest-win-$arch.msi"
+    $asset = $rel.assets | Where-Object name -eq $name
+    if (-not $asset) { throw "Release $latest has no asset named $name" }
+
+    $msi = Join-Path $env:TEMP $name
+    Write-Host "Downloading $name..."
+    Invoke-WebRequest $asset.browser_download_url -OutFile $msi -UseBasicParsing
+
+    # Verify SHA256 against the digest GitHub publishes for the asset
+    $hash = (Get-FileHash $msi -Algorithm SHA256).Hash.ToLower()
+    if ($asset.digest -and $asset.digest -ne "sha256:$hash") {
+        throw "SHA256 mismatch. Expected $($asset.digest), got sha256:$hash"
+    }
+
+    # Verify Microsoft Authenticode signature
+    $sig = Get-AuthenticodeSignature $msi
+    if ($sig.Status -ne 'Valid' -or $sig.SignerCertificate.Subject -notmatch 'O=Microsoft Corporation') {
+        throw "Signature check failed: $($sig.Status) / $($sig.SignerCertificate.Subject)"
+    }
+    Write-Host "Verified: SHA256 match, signed by Microsoft Corporation." -ForegroundColor DarkGray
+
+    $log = Join-Path $env:TEMP "pwsh-$latest-install.log"
+    Write-Host "Installing (log: $log)..."
+    $p = Start-Process msiexec.exe -ArgumentList "/i `"$msi`" /passive /norestart /l*v `"$log`"" -Wait -PassThru
+
+    switch ($p.ExitCode) {
+        0       { Write-Host "Upgrade to $latest complete. Close ALL PowerShell 7 windows and reopen." -ForegroundColor Green }
+        3010    { Write-Host "Upgrade to $latest complete; a reboot is required to finish." -ForegroundColor Yellow }
+        default { Write-Host "msiexec failed with exit code $($p.ExitCode). See $log" -ForegroundColor Red }
+    }
+    Remove-Item $msi -ErrorAction SilentlyContinue
+    Pause-Exit $p.ExitCode
+} catch {
+    Write-Host "Update failed: $($_.Exception.Message)" -ForegroundColor Red
+    Write-Host "PowerShell was NOT upgraded." -ForegroundColor Red
+    Pause-Exit 1
+}
 '@
+    $upgradeScript = $upgradeScript.
+        Replace('__CURRENT__', $PSVersionTable.PSVersion.ToString()).
+        Replace('__FORCE__',   $Force.IsPresent.ToString())
 
     Write-Host "Launching elevated Windows PowerShell to run the upgrade..." -ForegroundColor Yellow
-    Write-Host "Close any other PowerShell 7 windows before it starts." -ForegroundColor DarkGray
+    Write-Host "Close any other PowerShell 7 windows once it starts installing." -ForegroundColor DarkGray
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes($upgradeScript))
     Start-Process powershell.exe -Verb RunAs -ArgumentList '-NoProfile','-ExecutionPolicy','Bypass','-EncodedCommand',$encoded
 }
