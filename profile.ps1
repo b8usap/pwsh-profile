@@ -430,15 +430,20 @@ function Update-PowerShell {
         'winget upgrade --id ...'. On MSI installs winget's installed-package
         index can fail to match by Id ("No installed package found matching
         input criteria") even though a bare 'winget upgrade' lists it.
-        'install' resolves the Id against the winget catalog, detects the
-        existing install and upgrades it in place.
+        'install' resolves the Id against the winget catalog instead.
+
+        --installer-type wix is REQUIRED: the manifest's default installer
+        is the MSIX bundle, and because winget can't correlate the existing
+        MSI it treats 'install' as a fresh install and drops a Store/MSIX
+        copy side-by-side with the MSI. Pinning wix makes the MSI's own
+        major-upgrade logic replace the existing Program Files install.
 
         Runs the upgrade from Windows PowerShell 5.1 (powershell.exe) so
         pwsh.exe isn't holding its own files open while the MSI replaces them.
         Close other pwsh windows first.
     #>
     $upgradeScript = @'
-winget install --id Microsoft.PowerShell --exact --source winget --silent --accept-source-agreements --accept-package-agreements
+winget install --id Microsoft.PowerShell --exact --source winget --installer-type wix --silent --accept-source-agreements --accept-package-agreements
 $code = $LASTEXITCODE
 Write-Host ""
 # 0 = upgraded; -1978335189 (0x8A15002B) = already at the latest version
