@@ -385,6 +385,21 @@ Set-PSReadLineOption -Colors @{
 
 # ── PowerShell Update Check ───────────────────────────────────────────────────
 
+# Release line to track. Default '7.6' keeps this machine on the 7.6 LTS line
+# (7.7+ ships no MSI - only MSIX/zip - and is a short-term release). Set
+# PROFILE_PS_CHANNEL=latest to follow every stable release, or e.g. '7.8'.
+$script:PSUpdateChannel = if ($env:PROFILE_PS_CHANNEL) { $env:PROFILE_PS_CHANNEL } else { '7.6' }
+
+function Select-PSRelease {
+    # Newest stable (non-preview, non-draft) release on the given channel.
+    param($Releases, [string]$Channel)
+    $Releases |
+        Where-Object { -not $_.prerelease -and -not $_.draft -and
+                       ($Channel -eq 'latest' -or $_.tag_name -like "v$Channel.*") } |
+        Sort-Object { [version]($_.tag_name.TrimStart('v')) } -Descending |
+        Select-Object -First 1
+}
+
 function Check-PSUpdate {
     # Notify only — never run winget at startup. A synchronous winget upgrade
     # blocks the shell for 20+ seconds and can disrupt later profile steps
@@ -397,7 +412,9 @@ function Check-PSUpdate {
 
     try {
         $current = $PSVersionTable.PSVersion
-        $release = Invoke-RestMethod -Uri "https://api.github.com/repos/PowerShell/PowerShell/releases/latest" -TimeoutSec 5
+        $all     = Invoke-RestMethod -Uri "https://api.github.com/repos/PowerShell/PowerShell/releases?per_page=50" -TimeoutSec 5
+        $release = Select-PSRelease $all $script:PSUpdateChannel
+        if (-not $release) { return }
         $latest  = [Version]($release.tag_name -replace '^v', '')
 
         if ($latest -gt $current) {
@@ -423,8 +440,8 @@ function Check-PSUpdate {
 function Update-PowerShell {
     <#
     .SYNOPSIS
-        Upgrades PowerShell to the latest stable release from the official
-        GitHub MSI (SHA256 + Authenticode verified). Self-elevates.
+        Upgrades PowerShell to the newest release on the pinned channel (7.6 LTS)
+        from the official GitHub MSI (SHA256 + Authenticode verified). Self-elevates.
     .NOTES
         Deliberately does NOT use winget. On this setup winget proved
         unreliable for PowerShell itself:
@@ -461,8 +478,14 @@ function Pause-Exit([int]$code) {
 }
 
 try {
-    $rel    = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/PowerShell/releases/latest' -TimeoutSec 15
+    $channel = '__CHANNEL__'
+    $all     = Invoke-RestMethod 'https://api.github.com/repos/PowerShell/PowerShell/releases?per_page=50' -TimeoutSec 15
+    $rel     = $all | Where-Object { -not $_.prerelease -and -not $_.draft -and
+                                     ($channel -eq 'latest' -or $_.tag_name -like "v$channel.*") } |
+               Sort-Object { [version]($_.tag_name.TrimStart('v')) } -Descending | Select-Object -First 1
+    if (-not $rel) { throw "No stable release found on channel '$channel'" }
     $latest = [version]($rel.tag_name.TrimStart('v'))
+    Write-Host "Channel: $channel"
     Write-Host "Installed: $current   Latest: $latest"
 
     if ($latest -le $current -and -not $force) {
@@ -511,7 +534,8 @@ try {
 '@
     $upgradeScript = $upgradeScript.
         Replace('__CURRENT__', $PSVersionTable.PSVersion.ToString()).
-        Replace('__FORCE__',   $Force.IsPresent.ToString())
+        Replace('__FORCE__',   $Force.IsPresent.ToString()).
+        Replace('__CHANNEL__', $script:PSUpdateChannel)
 
     Write-Host "Launching elevated Windows PowerShell to run the upgrade..." -ForegroundColor Yellow
     Write-Host "Close any other PowerShell 7 windows once it starts installing." -ForegroundColor DarkGray
